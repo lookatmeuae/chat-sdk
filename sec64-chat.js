@@ -76,6 +76,7 @@
     S.opts = opts;
     S.tokenUrl        = opts.tokenUrl        || 'index.cfm?action=chat.firebaseLogin';
     S.ensureThreadUrl = opts.ensureThreadUrl || 'index.cfm?action=chat.ensureThread';
+    S.inboxUrl        = opts.inboxUrl        || 'index.cfm?action=chat.inbox';
     S.uploadUrl       = opts.uploadUrl       || 'index.cfm?action=chat.upload';
     S.soundUrl        = opts.soundUrl        || '';
     S.mountBell       = opts.bell ? qs(opts.bell) : null;
@@ -89,7 +90,9 @@
     S.meta            = {};
     S.receipts        = {};
     S.pending         = [];
-    S.inboxCache      = {};
+    S.inboxRows       = [];                                 // enriched rows from /chat.inbox
+    S.inboxLive       = {};                                 // live overlay from userRooms/<uid> (lastMessage/lastTs/unread)
+    S.activeTab       = 'internal';                         // internal | customers | vendors
     S.roomId          = null;
     S.built           = false;
     S.shellBuilt      = false;
@@ -161,7 +164,12 @@
       '</div>' +
       '<div class="sec64chat-body">' +
         '<aside class="sec64chat-inbox">' +
-          '<div class="sec64chat-search"><i class="fa fa-search"></i><input type="text" placeholder="Search chats…"></div>' +
+          '<div class="sec64chat-tabs">' +
+            '<button type="button" data-tab="internal"  class="active"><i class="fa fa-users"></i> Internal</button>' +
+            '<button type="button" data-tab="customers"><i class="fa fa-user-tie"></i> Customers</button>' +
+            '<button type="button" data-tab="vendors"><i class="fa fa-industry"></i> Vendors</button>' +
+          '</div>' +
+          '<div class="sec64chat-search"><i class="fa fa-search"></i><input type="text" placeholder="Search…"></div>' +
           '<div class="sec64chat-roomlist"></div>' +
         '</aside>' +
         '<section class="sec64chat-thread">' +
@@ -175,11 +183,19 @@
     S.elInbox     = ov.querySelector('.sec64chat-inbox');
     S.elInboxList = ov.querySelector('.sec64chat-roomlist');
     S.elSearch    = ov.querySelector('.sec64chat-search input');
+    S.elTabs      = ov.querySelector('.sec64chat-tabs');
     S.mountThread = ov.querySelector('.sec64chat-thread');
 
     ov.querySelector('[data-act=close]').onclick = function(e){ e.stopPropagation(); close(); };
     ov.querySelector('[data-act=min]').onclick   = function(e){ e.stopPropagation(); ov.classList.toggle('minimized'); };
     S.elSearch.addEventListener('input', renderInbox);
+    Array.prototype.forEach.call(S.elTabs.querySelectorAll('button[data-tab]'), function(b){
+      b.addEventListener('click', function(){
+        S.activeTab = b.getAttribute('data-tab');
+        Array.prototype.forEach.call(S.elTabs.querySelectorAll('button'), function(x){ x.classList.toggle('active', x===b); });
+        renderInbox();
+      });
+    });
     makeDraggable(ov, S.elBar);
 
     subscribeInbox();
@@ -530,44 +546,207 @@
     }
   }
 
-  /* ════════════════════════  INBOX (left pane)  ════════════════════════ */
+  /* ════════════════════════  INBOX (left pane, 3 tabs)  ════════════════════════ */
   function subscribeInbox(){
+    // 1) fetch enriched rows from server (one shot per open)
+    fetchInbox();
+    // 2) subscribe to userRooms for live unread / lastMessage / lastTs deltas
     if(S.inboxRef){ try{ S.inboxRef.off(); }catch(e){} }
     S.inboxRef = S.db.ref('userRooms/'+S.uid);
     S.inboxRef.on('value', function(snap){
-      S.inboxCache = snap.val() || {};
+      S.inboxLive = snap.val() || {};
       renderInbox();
     });
+  }
+  function fetchInbox(){
+    fetch(S.inboxUrl, {credentials:'same-origin'})
+      .then(function(r){ return r.json(); })
+      .then(function(res){
+        if(res && (res.status||res.STATUS)){
+          S.inboxRows = (res.rows || res.ROWS || []).map(normaliseInboxRow);
+          renderInbox();
+        } else {
+          console.warn('[Sec64Chat] inbox fetch failed', res);
+        }
+      }).catch(function(e){ console.error('[Sec64Chat] inbox',e); });
+  }
+  function normaliseInboxRow(r){
+    // Lucee may upper-case struct keys; normalise to camelCase
+    function g(k){ if(r[k]!=null) return r[k]; var U=k.toUpperCase(); return r[U]!=null?r[U]:''; }
+    return {
+      roomId:         g('roomId'),
+      threadType:     g('threadType'),
+      leadId:         +g('leadId') || 0,
+      taskId:         +g('taskId') || 0,
+      bidItemId:      +g('bidItemId') || 0,
+      vendorId:       +g('vendorId') || 0,
+      title:          g('title'),
+      lastMessage:    g('lastMessage'),
+      lastTs:         +g('lastTs') || 0,
+      unread:         +g('unread') || 0,
+      leadName:       g('leadName'),
+      leadCreatedAt:  +g('leadCreatedAt') || 0,
+      agentId:        +g('agentId') || 0,
+      agentName:      g('agentName'),
+      customerId:     +g('customerId') || 0,
+      customerName:   g('customerName'),
+      taskName:       g('taskName'),
+      taskTypeId:     +g('taskTypeId') || 0,
+      taskTypeLabel:  g('taskTypeLabel'),
+      taskCreatedAt:  +g('taskCreatedAt') || 0,
+      createdBy:      +g('createdBy') || 0,
+      createdByName:  g('createdByName'),
+      assignedTo:     +g('assignedTo') || 0,
+      assignedToName: g('assignedToName'),
+      bidCreatedAt:   +g('bidCreatedAt') || 0,
+      vendorName:     g('vendorName')
+    };
+  }
+  function shortName(n, max){
+    n = (n||'').trim(); max = max||14;
+    if(n.length <= max) return n;
+    return n.substring(0, max-1) + '…';
+  }
+  function ago(ts){
+    if(!ts) return '';
+    var s = Math.floor((Date.now()-ts)/1000);
+    if(s<60)     return 'just now';
+    if(s<3600)   return Math.floor(s/60)+'m ago';
+    if(s<86400)  return Math.floor(s/3600)+'h ago';
+    if(s<2592000)return Math.floor(s/86400)+'d ago';
+    return new Date(ts).toLocaleDateString();
   }
 
   function renderInbox(){
     if(!S.elInboxList) return;
-    var q = (S.elSearch && S.elSearch.value || '').trim().toLowerCase();
-    var items = [];
-    for(var roomId in S.inboxCache){
-      var r = S.inboxCache[roomId];
-      var title = (r.title || roomId);
-      if(q && title.toLowerCase().indexOf(q) === -1) continue;
-      items.push({ roomId: roomId, title: title, lastMessage: r.lastMessage||'', lastTs: r.lastTs||0, unread: r.unread||0 });
-    }
-    items.sort(function(a,b){ return (b.lastTs||0) - (a.lastTs||0); });
-
-    if(!items.length){
-      S.elInboxList.innerHTML = '<div class="sec64chat-emptyinbox">'+(q ? 'No matches.' : 'No chats yet.')+'</div>';
+    if(!S.inboxRows || !S.inboxRows.length){
+      S.elInboxList.innerHTML = '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>No chats yet</div></div>';
       return;
     }
-    S.elInboxList.innerHTML = items.map(function(it){
-      return '<div class="sec64chat-ic'+(S.roomId===it.roomId?' active':'')+'" data-room="'+esc(it.roomId)+'">'+
-        avatar(it.title, 36) +
-        '<div class="col">' +
-          '<div class="line1"><span class="t">'+esc(it.title)+'</span><span class="ts">'+esc(timeAgo(it.lastTs))+'</span></div>' +
-          '<div class="line2"><span class="p">'+esc(it.lastMessage)+'</span>'+(it.unread?'<span class="u">'+it.unread+'</span>':'')+'</div>' +
+
+    // overlay live RTDB updates onto the enriched cache
+    var merged = S.inboxRows.map(function(r){
+      var live = S.inboxLive[r.roomId];
+      if(live){
+        return Object.assign({}, r, {
+          lastMessage: live.lastMessage || r.lastMessage,
+          lastTs:      live.lastTs      || r.lastTs,
+          unread:      live.unread      != null ? live.unread : r.unread
+        });
+      }
+      return r;
+    });
+
+    // filter by active tab
+    var tab = S.activeTab || 'internal';
+    var rows = merged.filter(function(r){
+      if(tab==='internal')  return r.threadType==='task' || r.threadType==='bid_internal';
+      if(tab==='customers') return r.threadType==='customer';
+      if(tab==='vendors')   return r.threadType==='bid_vendor' || r.threadType==='job_vendor';
+      return true;
+    });
+
+    // free-text search
+    var q = (S.elSearch && S.elSearch.value || '').trim().toLowerCase();
+    if(q){
+      rows = rows.filter(function(r){
+        var hay = [
+          r.title, r.leadName, r.taskName, r.taskTypeLabel,
+          r.assignedToName, r.createdByName, r.agentName, r.customerName, r.vendorName,
+          'lead#'+r.leadId, 'task#'+r.taskId, 'bid#'+r.bidItemId, 'job#'+r.taskId
+        ].join(' ').toLowerCase();
+        return hay.indexOf(q) !== -1;
+      });
+    }
+
+    // group key per tab
+    function groupKey(r){
+      if(tab==='internal'){
+        if(r.threadType==='task')         return r.assignedToName || r.createdByName || 'Unassigned';
+        if(r.threadType==='bid_internal') return r.agentName || r.createdByName || 'Team';
+      }
+      if(tab==='customers') return r.customerName || ('Customer #'+r.customerId);
+      if(tab==='vendors')   return r.vendorName   || ('Vendor #'+r.vendorId);
+      return '';
+    }
+
+    // sort rows by lastTs desc
+    rows.sort(function(a,b){ return (b.lastTs||0) - (a.lastTs||0); });
+
+    // group preserving sort order (group order = first appearance of group, which = latest activity)
+    var groups = {};
+    var groupOrder = [];
+    rows.forEach(function(r){
+      var k = groupKey(r) || '—';
+      if(!groups[k]){ groups[k] = []; groupOrder.push(k); }
+      groups[k].push(r);
+    });
+
+    if(!groupOrder.length){
+      S.elInboxList.innerHTML = '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>'+(q?'No matches':'No chats in this tab')+'</div></div>';
+      return;
+    }
+
+    S.elInboxList.innerHTML = groupOrder.map(function(g){
+      var unreadCnt = groups[g].reduce(function(a,r){ return a + (r.unread||0); }, 0);
+      return '<div class="grp">' +
+          '<div class="grp-h">'+ avatar(g, 26) +
+            '<span class="grp-n">'+ esc(g) +'</span>' +
+            '<span class="grp-cnt">'+ groups[g].length +'</span>' +
+            (unreadCnt ? '<span class="grp-u">'+unreadCnt+'</span>' : '') +
+          '</div>' +
+          '<div class="grp-rows">'+ groups[g].map(renderInboxRow).join('') +'</div>' +
+        '</div>';
+    }).join('');
+
+    Array.prototype.forEach.call(S.elInboxList.querySelectorAll('.sec64chat-row-card'), function(el){
+      el.onclick = function(){ openRoom(el.getAttribute('data-room')); };
+    });
+  }
+
+  function renderInboxRow(r){
+    var l1='', l2='', createdLabel='created', createdAt=0;
+
+    if(r.threadType==='task'){
+      l1 = '<span class="tag tag-lead">Lead#'+r.leadId+'</span><span class="tag tag-task">Task#'+r.taskId+'</span>'
+         + (r.taskTypeLabel ? '<span class="tag tag-type">'+esc(r.taskTypeLabel)+'</span>' : '');
+      l2 = esc(r.createdByName||'?') + ' <i class="fa fa-arrow-right xs"></i> ' + esc(r.assignedToName||'?');
+      createdAt = r.taskCreatedAt;
+      createdLabel = 'task created';
+    } else if(r.threadType==='customer'){
+      l1 = '<span class="tag tag-lead">Lead#'+r.leadId+'</span>';
+      l2 = esc(r.agentName||'?') + ' <i class="fa fa-arrow-right xs"></i> ' + esc(r.customerName||'?');
+      createdAt = r.leadCreatedAt;
+      createdLabel = 'lead created';
+    } else if(r.threadType==='bid_internal'){
+      l1 = '<span class="tag tag-lead">Lead#'+r.leadId+'</span><span class="tag tag-task">Task#'+r.taskId+'</span><span class="tag tag-bid">Bid#'+r.bidItemId+'</span>';
+      l2 = esc(r.createdByName||'?') + ' <i class="fa fa-arrow-right xs"></i> ' + esc(r.assignedToName||'?');
+      createdAt = r.bidCreatedAt;
+      createdLabel = 'bid created';
+    } else if(r.threadType==='bid_vendor'){
+      l1 = '<span class="tag tag-lead">Lead#'+r.leadId+'</span><span class="tag tag-task">Task#'+r.taskId+'</span><span class="tag tag-bid">Bid#'+r.bidItemId+'</span>';
+      l2 = esc(r.createdByName||'?') + ' <i class="fa fa-arrow-right xs"></i> '
+         + '<span class="vname" data-tip="'+esc(r.vendorName||'')+'">'+esc(shortName(r.vendorName,14))+'</span>';
+      createdAt = r.bidCreatedAt;
+      createdLabel = 'bid created';
+    } else if(r.threadType==='job_vendor'){
+      l1 = '<span class="tag tag-lead">Lead#'+r.leadId+'</span><span class="tag tag-task">Task#'+r.taskId+'</span><span class="tag tag-job">Job#'+r.taskId+'</span>';
+      l2 = esc(r.createdByName||'?') + ' <i class="fa fa-arrow-right xs"></i> '
+         + '<span class="vname" data-tip="'+esc(r.vendorName||'')+'">'+esc(shortName(r.vendorName,14))+'</span>';
+      createdAt = r.taskCreatedAt;
+      createdLabel = 'job created';
+    }
+
+    var active = S.roomId === r.roomId ? ' active' : '';
+    return '<div class="sec64chat-row-card'+active+'" data-room="'+esc(r.roomId)+'">' +
+        '<div class="rc-top">' + l1 + '<span class="rc-ts" title="Last message">'+ esc(timeAgo(r.lastTs)) +'</span></div>' +
+        '<div class="rc-mid">' + l2 + '</div>' +
+        '<div class="rc-bot">' +
+          '<span class="rc-created"><i class="fa fa-clock-o"></i> '+ createdLabel +' '+ esc(ago(createdAt)) +'</span>' +
+          (r.lastMessage ? '<span class="rc-preview">'+ esc(r.lastMessage) +'</span>' : '') +
+          (r.unread ? '<span class="rc-u">'+ r.unread +'</span>' : '') +
         '</div>' +
       '</div>';
-    }).join('');
-    Array.prototype.forEach.call(S.elInboxList.querySelectorAll('.sec64chat-ic'), function(e){
-      e.onclick = function(){ openRoom(e.getAttribute('data-room')); };
-    });
   }
 
   /* ════════════════════════  PUBLIC API  ════════════════════════ */
