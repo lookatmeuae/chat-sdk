@@ -1,0 +1,41 @@
+/* 64sec chat — Portal theme overlay (black + gold)
+ * Load AFTER sec64-chat.css to recolor the overlay for the customer portal / studio app.
+ *
+ * <link rel="stylesheet" href=".../sec64-chat.css">
+ * <link rel="stylesheet" href=".../sec64-chat-portal-theme.css">
+ */
+.sec64chat-overlay {
+  --c-brand:        #111;
+  --c-brand-d:      #000;
+  --c-accent:       #f59e0b;                                /* warm gold */
+  --c-titlebar:     #111;                                   /* flat black bar */
+  --c-titlebar-fg:  #fff;
+  --c-bg:           #fafaf7;
+  --c-card:         #ffffff;
+  --c-bd:           #ececea;
+  --c-tx:           #111;
+  --c-mut:          #6b7280;
+  --c-mine-bg:      #111;
+  --c-mine-fg:      #fff;
+  --c-active:       #fef3c7;                                /* soft gold for active row */
+}
+
+/* portal-specific accents — subtle gold hover instead of grey */
+.sec64chat-overlay .sec64chat-bellbtn:hover,
+.sec64chat-overlay .sec64chat-tabs button.active { color: var(--c-accent); border-bottom-color: var(--c-accent); }
+
+/* ID color coding — keep semantic colors but soften */
+.sec64chat-overlay .sec64chat-row-card .id-lead { color: #1f2937; }
+.sec64chat-overlay .sec64chat-row-card .id-task { color: #b45309; }
+.sec64chat-overlay .sec64chat-row-card .id-bid  { color: #6b21a8; }
+.sec64chat-overlay .sec64chat-row-card .id-job  { color: #065f46; }
+
+/* "Search in CRM" CTA — gold instead of blue */
+.sec64chat-overlay .sec64chat-sd-cta { background: #fff7ed; border-color: #fed7aa; }
+.sec64chat-overlay .sec64chat-sd-cta:hover { background: #ffedd5; }
+.sec64chat-overlay .sec64chat-sd-cta i,
+.sec64chat-overlay .sec64chat-sd-cta .sd-t { color: var(--c-accent); }
+
+/* send button: black with gold-tinted icon on hover */
+.sec64chat-overlay .sec64chat-send { background: var(--c-brand); }
+.sec64chat-overlay .sec64chat-send:hover { background: #2a2a2a; color: var(--c-accent); }
