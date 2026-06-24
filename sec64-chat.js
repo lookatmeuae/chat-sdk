@@ -30,7 +30,14 @@
   function avatar(name,size){ size=size||34; var c=PALETTE[Math.abs(hash(name||'?'))%PALETTE.length]; return '<span class="sec64chat-ava" style="width:'+size+'px;height:'+size+'px;font-size:'+Math.round(size*0.4)+'px;background:'+c+'">'+esc(initials(name))+'</span>'; }
   function sideForRole(r){ r=(r||'').toLowerCase(); if(r==='customer')return 'customer'; if(r==='vendor')return 'vendor'; return 'internal'; }
   function roleLabel(r){ var k=(r||'').toLowerCase(); var M={sales:'Sales',agent:'Sales',designer:'Designer',production:'Production',ve:'Production',vrm:'Production',pm:'PM',finance:'Finance',accounts:'Accounts',dispatcher:'Dispatcher',delivery:'Dispatcher',qc:'QC',tl:'Team Lead',customer:'Customer',vendor:'Vendor',admin:'Admin',manager:'Manager',salesmanager:'Sales Manager',system:'System'}; return M[k] || (r ? r.charAt(0).toUpperCase()+r.slice(1) : ''); }
-  function fmt(ts){ if(!ts)return ''; var t=new Date(ts); return ('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2); }
+  function fmt(ts){
+    if(!ts) return '';
+    var t = new Date(ts);
+    var h = t.getHours(), m = t.getMinutes();
+    var ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12; if(h === 0) h = 12;
+    return h + ':' + ('0'+m).slice(-2) + ' ' + ampm;
+  }
   function dayKey(ts){ var t=new Date(ts); return t.getFullYear()+'-'+t.getMonth()+'-'+t.getDate(); }
   function dayLabel(ts){ var t=new Date(ts), n=new Date(); var k=dayKey(ts); if(k===dayKey(n.getTime()))return 'Today'; n.setDate(n.getDate()-1); if(k===dayKey(n.getTime()))return 'Yesterday'; return t.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}); }
   function canSee(side,vid,aud){ if(aud==='all')return true; if(aud==='internal')return side==='internal'; if(aud==='customer')return side==='internal'||side==='customer'; if(aud&&aud.indexOf('vendor_')===0)return side==='internal'||(side==='vendor'&&String(vid)===aud.split('_')[1]); return false; }
@@ -864,10 +871,21 @@
       ? ms.map(function(m){ return '<span class="sec64chat-mchip" title="'+esc(roleLabel(m.role))+'">'+avatar(m.name,20)+'<span class="mn">'+esc(m.name||m.uid)+'</span></span>'; }).join('')
       : '<span class="sec64chat-mt">No participants yet</span>';
     var canAddBtn = canManageMembers() ? '<button type="button" class="sec64chat-addmember-btn" title="Add user"><i class="fa fa-user-plus"></i></button>' : '';
-    var ctxHtml   = buildContextStrip();           // task/bid/job context line — created-by + assigned-to + customer
+    var ctxHtml   = buildContextStrip();
+    // For INTERNAL threads (task / bid_internal), surface the lead's customer in the title row
+    // so the team can see whose lead this is at a glance. NOT a chat participant.
+    var custTitle = '';
+    var ibx = findInboxRow();
+    if(ibx && (ibx.threadType === 'task' || ibx.threadType === 'bid_internal') && ibx.customerName){
+      custTitle = '<span class="sec64chat-title-cust" title="Customer"><i class="fa fa-user"></i>'+esc(ibx.customerName)+'</span>';
+    }
     S.elHd.innerHTML =
       '<div class="sec64chat-title-row">' +
-        '<div class="sec64chat-title">'+esc(S.meta.title||S.roomId)+'<span class="cnt">'+ms.length+' participant'+(ms.length===1?'':'s')+'</span></div>' +
+        '<div class="sec64chat-title">' +
+          esc(S.meta.title||S.roomId) +
+          custTitle +
+          '<span class="cnt">'+ms.length+' participant'+(ms.length===1?'':'s')+'</span>' +
+        '</div>' +
         canAddBtn +
       '</div>' +
       '<div class="sec64chat-members">'+chips+'</div>' +
@@ -876,6 +894,11 @@
     var addBtn = S.elHd.querySelector('.sec64chat-addmember-btn');
     if(addBtn) addBtn.onclick = function(e){ e.stopPropagation(); openAddMemberPopover(addBtn); };
     updateMembershipUI();
+  }
+  function findInboxRow(){
+    if(!S.roomId || !S.inboxRows) return null;
+    for(var i=0; i<S.inboxRows.length; i++){ if(S.inboxRows[i].roomId === S.roomId) return S.inboxRows[i]; }
+    return null;
   }
 
   // Build a "who/what/when" context strip from the inbox row for the current room.
@@ -892,9 +915,9 @@
       return '<span class="ctx-pill'+cls+'"><i class="fa '+icon+'"></i><span class="ctx-l">'+label+'</span> <b>'+esc(value)+'</b></span>';
     }
     if(r.threadType === 'task' || r.threadType === 'bid_internal'){
+      // Internal threads — keep it strictly internal context (no customer / vendor pills).
       parts.push(pill('fa-user-edit',  'Created by',  r.createdByName, 'sales'));
       parts.push(pill('fa-user-check', 'Assigned to', r.assignedToName, 'assignee'));
-      if(r.customerName) parts.push(pill('fa-user',  'Customer', r.customerName, 'cust'));
       if(r.taskCreatedAt || r.bidCreatedAt){
         parts.push(pill('fa-clock', (r.threadType==='task'?'Task':'Bid')+' created', ago(r.taskCreatedAt||r.bidCreatedAt), 'time'));
       }
@@ -903,9 +926,9 @@
       parts.push(pill('fa-user-check', 'Sales',    r.agentName, 'sales'));
       if(r.leadCreatedAt) parts.push(pill('fa-clock', 'Lead created', ago(r.leadCreatedAt), 'time'));
     } else if(r.threadType === 'bid_vendor' || r.threadType === 'job_vendor'){
+      // Vendor threads — the vendor IS the counterparty so show it; skip customer (not relevant to vendor).
       parts.push(pill('fa-industry',   'Vendor',     r.vendorName, 'vendor'));
       parts.push(pill('fa-user-edit',  'Created by', r.createdByName, 'sales'));
-      if(r.customerName) parts.push(pill('fa-user', 'Customer', r.customerName, 'cust'));
       if(r.taskCreatedAt || r.bidCreatedAt){
         parts.push(pill('fa-clock', (r.threadType==='bid_vendor'?'Bid':'Job')+' created', ago(r.taskCreatedAt||r.bidCreatedAt), 'time'));
       }
