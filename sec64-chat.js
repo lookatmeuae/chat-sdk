@@ -1073,11 +1073,13 @@
       var slot = mine ? '' : ('<div class="slot">'+(grp?'':avatar(displayName(m),30))+'</div>');
       var nm   = (!mine && !grp) ? '<div class="sname">'+esc(displayName(m))+'</div>' : '';
       var bodyText, bodyAtts, actions = '', editedTag = '';
+      var bodyReply = '';
       if(deleted){
         bodyText = '<i class="msg-deleted"><i class="fa fa-ban"></i> this message was deleted</i>';
         bodyAtts = '';
       } else {
-        bodyText = m.text ? esc(m.text) : '';
+        bodyReply = renderReplyTag(m);                                        // quoted context block (lead/item etc.)
+        bodyText = m.text ? '<div class="msg-text">'+escMultiline(m.text)+'</div>' : '';
         bodyAtts = renderAtts(m.attachments);
         if(edited) editedTag = '<span class="msg-edited" title="edited">(edited)</span>';
         if(mine){
@@ -1085,7 +1087,7 @@
         }
       }
       var ft   = '<div class="ft">'+(pv.priv && !deleted ?'<i class="fa fa-lock lock" title="'+esc(pv.tip||'')+'"></i>':'')+(pv.priv&&pv.inline && !deleted ?'<span class="only">'+esc(pv.inline)+'</span>':'')+editedTag+'<span class="tm">'+fmt(m.ts)+'</span>'+(mine && !deleted ?'<span class="tick" data-ts="'+(m.ts||0)+'" data-aud="'+esc(m._ch)+'"></span>':'')+'</div>';
-      var bub  = '<div class="sec64chat-bubble'+(pv.priv && !deleted ?' priv':'')+(deleted ?' deleted':'')+'">'+bodyText+bodyAtts+ft+actions+'</div>';
+      var bub  = '<div class="sec64chat-bubble'+(pv.priv && !deleted ?' priv':'')+(deleted ?' deleted':'')+'">'+bodyReply+bodyText+bodyAtts+ft+actions+'</div>';
       row.innerHTML = slot + '<div class="col">'+nm+bub+'</div>';
       // wire kebab menu (Edit / Delete) on own messages
       if(mine && !deleted){
@@ -1096,6 +1098,36 @@
     });
     S.elList.scrollTop = S.elList.scrollHeight;
     renderTicks(); markRead(msgs);
+  }
+
+  // Preserve newlines from server-side text (`\n`) as <br> while still escaping HTML.
+  function escMultiline(s){ return esc(String(s||'')).replace(/\n/g, '<br>'); }
+
+  // Quoted "reply" tag rendered above the message body — drives off m.payload.reply.
+  // Supported kind: "lead-item" (lead/item context block).
+  function renderReplyTag(m){
+    var r = m && m.payload && m.payload.reply;
+    if(!r || typeof r !== 'object') return '';
+    var kind = r.kind || '';
+    if(kind === 'lead-item'){
+      var line1 = '<i class="fa fa-cube"></i> ';
+      var bits = [];
+      if(r.leadId)    bits.push('Lead #'+esc(r.leadId));
+      if(r.itemId)    bits.push('Item #'+esc(r.itemId));
+      if(r.bidItemId) bits.push('Bid #'+esc(r.bidItemId));
+      line1 += bits.join(' · ');
+      var line2 = r.description ? esc(r.description) : '';
+      var line3 = '';
+      if(r.quantity){
+        line3 = 'Qty: ' + esc(r.quantity) + (r.unit ? ' ' + esc(r.unit) : '');
+      }
+      return '<div class="msg-reply">' +
+               '<div class="mr-head">' + line1 + '</div>' +
+               (line2 ? '<div class="mr-desc">' + line2 + '</div>' : '') +
+               (line3 ? '<div class="mr-qty">'  + line3 + '</div>' : '') +
+             '</div>';
+    }
+    return '';
   }
 
   function renderAtts(atts){

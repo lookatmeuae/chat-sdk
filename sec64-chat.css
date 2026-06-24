@@ -383,6 +383,25 @@
 .msg-deleted { font-size:12.5px; font-style:italic; color:#94a3b8; display:inline-flex; align-items:center; gap:5px; }
 .msg-deleted i { font-size:11px; }
 
+/* multi-line message body — preserve server-side newlines */
+.msg-text { white-space:normal; line-height:1.45; }
+
+/* quoted "reply" tag — lead/item context block above message body */
+.msg-reply {
+  margin:0 0 6px 0; padding:7px 10px 7px 12px;
+  background:rgba(15,23,42,.05); border-left:3px solid var(--c-brand);
+  border-radius:6px 8px 8px 6px; font-size:11.5px; color:#475569;
+}
+.msg-reply .mr-head { font-weight:700; color:#1e40af; font-size:11.5px; line-height:1.4; margin-bottom:3px; }
+.msg-reply .mr-head i { font-size:10px; margin-right:4px; opacity:.7; }
+.msg-reply .mr-desc { color:#1f2937; font-size:11.5px; line-height:1.4; }
+.msg-reply .mr-qty  { color:#64748b; font-size:11px; font-weight:600; margin-top:2px; }
+/* on my own bubble (blue), keep the reply readable */
+.sec64chat-row.mine .msg-reply { background:rgba(255,255,255,.18); border-left-color:rgba(255,255,255,.7); }
+.sec64chat-row.mine .msg-reply .mr-head { color:#fff; }
+.sec64chat-row.mine .msg-reply .mr-desc { color:#fff; opacity:.95; }
+.sec64chat-row.mine .msg-reply .mr-qty  { color:rgba(255,255,255,.85); }
+
 /* inline edit mode */
 .msg-edit-ta { width:100%; min-width:240px; min-height:22px; border:none; outline:none; background:rgba(255,255,255,.85); border-radius:6px; padding:5px 8px; font-size:13.5px; line-height:1.45; color:#1f2937; resize:none; font-family:inherit; }
 .sec64chat-row.mine .msg-edit-ta { background:rgba(255,255,255,.95); }
