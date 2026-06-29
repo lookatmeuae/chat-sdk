@@ -66,6 +66,7 @@
 .sec64chat-tb-btn:hover { background:rgba(255,255,255,.30); }
 .sec64chat-tb-btn.muted { background:rgba(239,68,68,.85); color:#fff; }
 .sec64chat-tb-btn.muted:hover { background:rgba(239,68,68,1); }
+.sec64chat-tb-btn.tb-mute { margin-right:6px; }   /* left-side mute toggle, breathing room from title */
 /* small "muted" indicator on the global FAB */
 .sec64chat-fab.muted::after {
   content:''; position:absolute; bottom:-2px; right:-2px;
@@ -144,6 +145,11 @@
 }
 .sec64chat-scopebar .sb-clear:hover { background:var(--c-brand); color:#fff; border-color:var(--c-brand); }
 .sec64chat-scopebar .sb-clear i { font-size:9px; }
+.sec64chat-scopebar .sb-other {
+  flex:none; background:#ef4444; color:#fff; font-size:10.5px; font-weight:700;
+  padding:2px 8px; border-radius:10px; margin-right:4px;
+  box-shadow:0 1px 2px rgba(239,68,68,.4);
+}
 
 /* group headers (accordion) */
 .sec64chat-roomlist .grp { padding-top:0; }
@@ -339,7 +345,14 @@
 .sec64chat-row.mine .sec64chat-bubble .lock { color:rgba(255,255,255,.8); }
 .sec64chat-bubble .only { font-size:10px; color:var(--c-mut); }
 .sec64chat-row.mine .sec64chat-bubble .only { color:rgba(255,255,255,.75); }
-.sec64chat-bubble .tick { font-size:11px; margin-left:1px; }
+.sec64chat-bubble .tick { font-size:11px; margin-left:1px; line-height:1; }
+.sec64chat-bubble .tick .tk { font-size:12px; letter-spacing:-2px; font-weight:700; }
+.sec64chat-bubble .tick .tk-sent  { color:rgba(255,255,255,.7); }
+.sec64chat-bubble .tick .tk-deliv { color:rgba(255,255,255,.85); }
+.sec64chat-bubble .tick .tk-read  { color:#3b82f6; }
+/* on other-people bubbles (rare — ticks only render on mine — kept for safety) */
+.sec64chat-row:not(.mine) .sec64chat-bubble .tick .tk-sent { color:#94a3b8; }
+.sec64chat-row:not(.mine) .sec64chat-bubble .tick .tk-deliv { color:#64748b; }
 .sec64chat-bubble.note { background:#fff; border:1px dashed var(--c-bd); color:var(--c-tx); display:flex; gap:9px; align-items:center; max-width:100%; }
 .sec64chat-bubble.note .ni { width:30px; height:30px; border-radius:8px; background:#eef2ff; color:var(--c-brand); display:flex; align-items:center; justify-content:center; flex:none; }
 
@@ -474,48 +487,62 @@
 
 /* ── toast stack — push notifications for incoming messages ── */
 .sec64chat-toasts {
-  position:fixed; right:24px; bottom:96px; z-index:2147483600;
-  display:flex; flex-direction:column-reverse; gap:10px;
-  max-width:360px; pointer-events:none;
+  position:fixed; right:24px; bottom:164px; z-index:2147483600;
+  display:flex; flex-direction:column-reverse; gap:8px;
+  max-width:560px; pointer-events:none;
 }
+/* 4-section toast — Lead# | TYPE | message (ellipses) | ✕ — never wraps, single row.
+   Uses display:table on the toast so children CAN'T stack vertically even if some
+   inherited rule fights us. */
 .sec64chat-toast {
-  position:relative; display:flex; align-items:center; gap:10px;
-  background:#fff; border:1px solid var(--c-bd); border-radius:12px;
-  padding:11px 12px; box-shadow:0 10px 28px rgba(15,23,42,.22), 0 2px 6px rgba(15,23,42,.10);
+  position:relative !important; display:table !important; table-layout:auto !important;
+  background:#fff; border:1px solid var(--c-bd); border-radius:10px;
+  box-shadow:0 8px 22px rgba(15,23,42,.20), 0 2px 5px rgba(15,23,42,.10);
   pointer-events:auto; cursor:pointer; overflow:hidden;
-  opacity:0; transform:translateX(380px); transition:opacity .25s ease, transform .25s cubic-bezier(.34,1.56,.64,1);
-  font:13px/1.4 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; color:var(--c-tx);
+  opacity:0; transform:translateX(580px); transition:opacity .22s ease, transform .22s cubic-bezier(.34,1.56,.64,1);
+  font:13px/1 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif; color:var(--c-tx);
+  width:520px; max-width:90vw;
 }
 .sec64chat-toast.show { opacity:1; transform:translateX(0); }
-.sec64chat-toast.hide { opacity:0; transform:translateX(380px); }
-.sec64chat-toast:hover { box-shadow:0 14px 36px rgba(15,23,42,.28), 0 4px 10px rgba(15,23,42,.14); }
-.sec64chat-toast .sec64chat-ava { flex:none; }
-.sec64chat-toast .t-body { flex:1; min-width:0; }
-.sec64chat-toast .t-head { display:flex; align-items:center; gap:6px; }
-.sec64chat-toast .t-name { font-weight:700; color:#0f172a; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sec64chat-toast .t-thread {
-  flex:none; font-size:9px; font-weight:700; padding:2px 6px; border-radius:4px;
-  background:#eef4ff; color:var(--c-brand); letter-spacing:.3px; text-transform:uppercase;
+.sec64chat-toast.hide { opacity:0; transform:translateX(580px); }
+.sec64chat-toast:hover { box-shadow:0 12px 28px rgba(15,23,42,.26), 0 3px 8px rgba(15,23,42,.14); }
+
+.sec64chat-toast > .t-lead,
+.sec64chat-toast > .t-thread,
+.sec64chat-toast > .t-msg {
+  display:table-cell !important;
+  vertical-align:middle !important;
+  padding:11px 12px;
+  white-space:nowrap;
 }
-.sec64chat-toast .t-msg { font-size:12.5px; color:#475569; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.sec64chat-toast .t-close {
-  flex:none; width:22px; height:22px; border:none; border-radius:50%; padding:0;
-  background:transparent; color:#94a3b8; cursor:pointer; font-size:11px;
-  display:flex; align-items:center; justify-content:center; transition:background .12s, color .12s;
+.sec64chat-toast > .t-lead {
+  width:1%;            /* shrink-to-fit */
+  font-weight:700; color:#1e40af; font-size:12.5px;
+  background:#eff6ff; border-right:1px solid #dbeafe;
 }
-.sec64chat-toast .t-close:hover { background:#f1f5f9; color:#1f2937; }
-/* 5-second auto-dismiss progress bar at the bottom of the toast */
+.sec64chat-toast > .t-thread {
+  width:1%;
+  font-size:10px; font-weight:800;
+  background:#fef3c7; color:#92400e; border-right:1px solid #fde68a;
+  letter-spacing:.4px; text-transform:uppercase;
+}
+.sec64chat-toast > .t-msg {
+  width:auto;          /* fill remaining */
+  font-size:13px; color:#1f2937; font-weight:500;
+  overflow:hidden; text-overflow:ellipsis; max-width:0;     /* required with table-layout for ellipsis */
+}
+/* 3-second auto-dismiss progress bar at the bottom of the toast */
 .sec64chat-toast .t-progress {
   position:absolute; left:0; right:0; bottom:0; height:2px;
   background:linear-gradient(90deg, var(--c-brand), #60a5fa);
-  transform-origin:left center; animation: sec64-toast-bar 5s linear forwards;
+  transform-origin:left center; animation: sec64-toast-bar 3s linear forwards;
 }
 .sec64chat-toast.paused .t-progress { animation-play-state:paused; }
 @keyframes sec64-toast-bar { from { transform:scaleX(1); } to { transform:scaleX(0); } }
 
 /* ── global floating chat FAB (auto-mounted on every page) ── */
 .sec64chat-fab {
-  position:fixed; right:24px; bottom:24px; z-index:2147483599;
+  position:fixed; right:24px; bottom:92px; z-index:2147483599;
   width:56px; height:56px; border-radius:50%; border:none;
   background:linear-gradient(135deg, #185cb4 0%, #0f4791 100%);
   color:#fff; font-size:22px; cursor:pointer;
@@ -561,6 +588,18 @@ body:has(.sec64chat-overlay.open) .sec64chat-fab { display:none; }
   vertical-align:middle; white-space:nowrap;
 }
 .sec64chat-title-cust i { font-size:10px; color:#d97706; }
+
+/* "Open Lead / Open Task / Open Bid / Open Job" deep-link buttons in the title row */
+.sec64chat-open-links { display:inline-flex; gap:5px; flex:none; }
+.sec64chat-open-link {
+  display:inline-flex; align-items:center; gap:5px; padding:4px 9px; border-radius:6px;
+  background:#f1f5f9; color:#475569; font-size:11.5px; font-weight:600; text-decoration:none;
+  border:1px solid var(--c-bd); transition:background .12s, color .12s, border-color .12s, transform .1s;
+  white-space:nowrap;
+}
+.sec64chat-open-link i { font-size:10px; opacity:.75; }
+.sec64chat-open-link:hover { background:var(--c-brand); color:#fff; border-color:var(--c-brand); text-decoration:none; transform:translateY(-1px); }
+.sec64chat-open-link:hover i { opacity:1; }
 .sec64chat-title { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .sec64chat-addmember-btn { flex:none; width:28px; height:28px; border:none; border-radius:50%; background:#eef2ff; color:var(--c-brand); cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:12px; transition:background .12s,color .12s; }
 .sec64chat-addmember-btn:hover { background:var(--c-brand); color:#fff; }

@@ -119,6 +119,17 @@
     S.saveAttachUrl    = opts.saveAttachUrl    || 'index.cfm?action=chat.saveAttachments';
     S.addMemberUrl     = opts.addMemberUrl     || 'index.cfm?action=chat.addMember';
     S.userSearchUrl    = opts.userSearchUrl    || 'index.cfm?action=chat.searchUsers';
+    // Open-entity URL templates — placeholders {leadId} {taskId} {bidItemId} {vendorId} {itemId} {customerId} get replaced.
+    // Lead is common across all apps (CRM is the system of record). Tasks/bids/jobs default to sensible app URLs;
+    // host pages can override any of these via Sec64Chat.init({ openUrls: { lead:'...', task:'...', bid:'...', job:'...' } }).
+    var defaultOpenUrls = {
+      lead:    'https://crm.64sec.com/index.cfm?action=leads.leadData&id={leadId}',
+      task:    'https://crm.64sec.com/index.cfm?action=leads.leadData&id={leadId}',
+      bid:     'https://prodadmin.64sec.com/index.cfm?action=orders.biddingEditForm&task_id={taskId}&item_id={itemId}&bid_item_id={bidItemId}',
+      job:     'https://delivery.64sec.com/index.cfm?action=delivery.default&id={taskId}',
+      customer:'https://crm.64sec.com/index.cfm?action=customers.detail&id={customerId}'
+    };
+    S.openUrls = Object.assign({}, defaultOpenUrls, opts.openUrls || {});
     // Default sound to the SDK-bundled chat-ping.wav (ships next to sec64-chat.js).
     // Consumers can override via opts.soundUrl, but auto-falling-back to the SDK file
     // means apps don't need to provision their own asset and we never 404.
@@ -202,6 +213,12 @@
     S.audioUnlocked = false;
 
     function unlock(){
+      // Piggyback on the audio-unlock gesture: ask for Notification permission too if undecided.
+      // Both the AudioContext unlock and Notification.requestPermission() require a user gesture, so
+      // doing them in the same handler is the cleanest reliable moment.
+      if('Notification' in w && Notification.permission === 'default'){
+        try { Notification.requestPermission().catch(function(){}); } catch(e){}
+      }
       if(S.audioUnlocked) return;
       // Unlock the <audio> element (muted play→pause→unmute pattern)
       if(S.audio){
@@ -239,21 +256,21 @@
     updateMuteUI();
   }
   function updateMuteUI(){
-    // Toggle the title-bar icon between volume-up and volume-mute.
+    var iconHtml = '<i class="fa fa-volume-' + (S.muted ? 'mute' : 'up') + '"></i>';
+    var tipText  = S.muted ? 'Notification sound is OFF — click to unmute' : 'Mute notification sound';
+    // Title-bar mute icon (visible when overlay is open)
     if(S.overlay){
       var btn = S.overlay.querySelector('[data-act=mute]');
-      if(btn){
-        btn.innerHTML = '<i class="fa fa-volume-' + (S.muted ? 'mute' : 'up') + '"></i>';
-        btn.title = S.muted ? 'Notification sound is OFF — click to unmute' : 'Mute notification sound';
-        btn.classList.toggle('muted', S.muted);
-      }
+      if(btn){ btn.innerHTML = iconHtml; btn.title = tipText; btn.classList.toggle('muted', S.muted); }
     }
-    // Reflect on the FAB so users see the muted state without opening the overlay.
+    // Global mute toggle next to the FAB (always accessible)
+    if(S.fabMute){ S.fabMute.innerHTML = iconHtml; S.fabMute.title = tipText; S.fabMute.classList.toggle('muted', S.muted); }
+    // Slash indicator on the FAB itself
     if(S.fabEl) S.fabEl.classList.toggle('muted', S.muted);
   }
 
   function playPing(){
-    if(S.muted) return;                                                // user has turned the ping off
+    if(S.muted){ console.log('[Sec64Chat] ping skipped — muted'); return; }
     // Try the file first
     if(S.audio){
       try {
@@ -363,6 +380,8 @@
     d.body.appendChild(fab);
     S.fabEl    = fab;
     S.fabBadge = fab.querySelector('.sec64chat-fab-badge');
+    S.fabMute  = null;                                               // global mute removed — toggle lives in the overlay title bar only
+    updateMuteUI();                                                  // sync the FAB muted-slash indicator with persisted state
   }
 
   function updateFabBadge(n){
@@ -402,14 +421,29 @@
 
     var badge = S.mountBell.querySelector('.sec64chat-bellbadge');
 
-    // (1) Badge count + FAB total — value listener on the whole list, recomputes every change
+    // (1) Badge count + FAB total — value listener on the whole list, recomputes every change.
+    //     Also auto-reconciles: if a notification points to a room whose userRooms.unread is 0
+    //     (orphan — usually from older buggy bumps), mark it read so the bell badge stays truthful.
     S.bellRef = S.db.ref('userNotifications/'+S.uid).limitToLast(50);
     S.bellRef.on('value', function(snap){
-      var v = snap.val() || {}, unread = 0;
-      for(var k in v){ if(v[k] && v[k].isRead === false) unread++; }
+      var v = snap.val() || {}, unread = 0, reconcileUpdates = {};
+      for(var k in v){
+        var n = v[k];
+        if(!n || n.isRead !== false) continue;
+        // Orphan check — notification's room exists in inbox but has unread=0
+        var live = n.roomId && S.inboxLive ? S.inboxLive[n.roomId] : null;
+        if(live && (!live.unread || live.unread <= 0)){
+          reconcileUpdates[k+'/isRead'] = true;                       // mark this orphan as read
+          continue;                                                   // don't count it in the unread total
+        }
+        unread++;
+      }
       badge.textContent = unread;
       badge.style.display = unread ? 'inline-block' : 'none';
-      updateFabBadge(unread);                                          // mirror count on the floating FAB
+      updateFabBadge(unread);
+      if(Object.keys(reconcileUpdates).length){
+        S.bellRef.update(reconcileUpdates).catch(function(){});
+      }
     });
 
     // (2) Ping sound — child_added listener fires per individual notification.
@@ -423,25 +457,64 @@
       primed = true;
     });
     S.bellRef.on('child_added', function(snap){
-      if(!primed)            return;                                  // initial flood — ignore until seed completes
-      if(initialKeys[snap.key]) return;                               // already existed at seed time
+      if(!primed)               return;                                // initial flood — ignore until seed completes
+      if(initialKeys[snap.key]) return;                                // already existed at seed time
       var n = snap.val() || {};
-      if(n.isRead === true)  return;                                  // already read elsewhere
-      playPing();                                                     // <-- uses shared S.audio (unlocked at init)
-      // Skip the toast if user is already looking at this room (overlay open + that room active).
+      if(n.isRead === true)     return;                                // already read elsewhere
+      playPing();                                                      // shared S.audio (unlocked at init)
+
+      // Skip if user is already looking at this room (overlay open + that room active) — nothing to alert about.
       var overlayOpen = S.overlay && S.overlay.classList.contains('open') && !S.overlay.classList.contains('minimized');
-      if(!(overlayOpen && S.roomId && n.roomId === S.roomId)){
-        showToast({
-          roomId:     n.roomId,
-          message:    n.title || '',
-          senderName: n.senderName || '',
-          threadType: n.threadType || ''
-        });
-      }
+      if(overlayOpen && S.roomId && n.roomId === S.roomId) return;
+
+      // OS-level desktop notification (in-app toast removed per request).
+      fireNativeNotif({
+        roomId:     n.roomId,
+        message:    n.title || '',
+        senderName: n.senderName || '',
+        threadType: n.threadType || ''
+      });
     });
   }
 
-  /* ════════════════════════  TOAST (push-style in-page notification)  ════════════════════════ */
+  /* ════════════════════════  DESKTOP / OS-LEVEL NOTIFICATIONS (Web Notifications API)
+     Fires only when the browser tab is hidden — the in-app toast covers the visible case.
+     Respects S.muted. Clicking the notification focuses the tab + opens the chat.
+     No third-party dependency; pure browser API.
+  ════════════════════════ */
+  function fireNativeNotif(p){
+    if(S.muted){                                console.log('[Sec64Chat] notif skipped — muted'); return; }
+    if(!('Notification' in w)){                 console.warn('[Sec64Chat] notif unsupported in this browser'); return; }
+    if(Notification.permission === 'denied'){   console.warn('[Sec64Chat] notif permission DENIED — re-enable in browser site settings'); return; }
+    if(Notification.permission !== 'granted'){
+      console.warn('[Sec64Chat] notif permission not granted yet (state='+Notification.permission+') — will request on next user click');
+      return;
+    }
+    var leadId = 0;
+    if(p.roomId){ var m = String(p.roomId).match(/^lead_(\d+)/); if(m) leadId = +m[1]; }
+    var label = threadTypeLabel(p.threadType);
+    var title = '64sec — ' + (leadId ? 'Lead #'+leadId : 'New message') + (label ? ' · '+label : '');
+    var body  = (p.senderName ? p.senderName + ': ' : '') + (p.message || 'New message');
+    try {
+      var n = new Notification(title, {
+        body: body,
+        tag:  p.roomId || '',                         // collapse multiple from same room
+        renotify: true,
+        silent: true                                  // we already played our own ping
+      });
+      n.onclick = function(){
+        try { w.focus(); } catch(e){}
+        n.close();
+        if(p.roomId){ open(); openRoom(p.roomId); }
+      };
+      setTimeout(function(){ try { n.close(); } catch(e){} }, 6000);
+      console.log('[Sec64Chat] desktop notif shown:', title);
+    } catch(e){ console.error('[Sec64Chat] notif failed', e); }
+  }
+
+  /* ════════════════════════  TOAST (push-style in-page notification)
+     Custom 3-section single-row toast: Lead# | TYPE | message. Click to open chat. Auto-dismiss 3s.
+  ════════════════════════ */
   function showToast(p){
     var stack = d.getElementById('sec64chat-toasts');
     if(!stack){
@@ -454,34 +527,28 @@
     var toast = d.createElement('div');
     toast.className = 'sec64chat-toast';
     var threadLabel = threadTypeLabel(p.threadType);
+    var leadId = 0;
+    if(p.roomId){ var m = String(p.roomId).match(/^lead_(\d+)/); if(m) leadId = +m[1]; }
     toast.innerHTML =
-      avatar(p.senderName || '?', 36) +
-      '<div class="t-body">' +
-        '<div class="t-head"><span class="t-name">'+esc(p.senderName||'Someone')+'</span>' +
-          (threadLabel ? '<span class="t-thread">'+threadLabel+'</span>' : '') +
-        '</div>' +
-        '<div class="t-msg">'+esc(p.message||'New message')+'</div>' +
-      '</div>' +
-      '<button type="button" class="t-close" title="Dismiss"><i class="fa fa-times"></i></button>' +
+      (leadId ? '<span class="t-lead">Lead#'+leadId+'</span>' : '') +
+      (threadLabel ? '<span class="t-thread">'+threadLabel+'</span>' : '') +
+      '<span class="t-msg" title="'+esc(p.message||'')+'">'+esc(p.message||'New message')+'</span>' +
       '<div class="t-progress"></div>';
 
-    toast.addEventListener('click', function(e){
-      if(e.target.closest('.t-close')){ dismissToast(toast); return; }
+    toast.addEventListener('click', function(){
       if(p.roomId){ open(); openRoom(p.roomId); }
       dismissToast(toast);
     });
 
     stack.appendChild(toast);
     requestAnimationFrame(function(){ toast.classList.add('show'); });
-    var hideTimer = setTimeout(function(){ dismissToast(toast); }, 5000);
-    // Pause auto-dismiss on hover so users can read longer
+    var hideTimer = setTimeout(function(){ dismissToast(toast); }, 3000);
     toast.addEventListener('mouseenter', function(){ clearTimeout(hideTimer); toast.classList.add('paused'); });
     toast.addEventListener('mouseleave', function(){
       toast.classList.remove('paused');
-      hideTimer = setTimeout(function(){ dismissToast(toast); }, 2500);
+      hideTimer = setTimeout(function(){ dismissToast(toast); }, 1500);
     });
 
-    // Keep max 4 toasts visible — pop the oldest
     while(stack.children.length > 4) dismissToast(stack.firstElementChild);
   }
   function dismissToast(toast){
@@ -510,8 +577,8 @@
     ov.innerHTML =
       '<div class="sec64chat-titlebar">' +
         '<i class="fa fa-comments tb-i"></i>' +
+        '<button type="button" class="sec64chat-tb-btn tb-mute" data-act="mute" title="Mute notification sound"><i class="fa fa-volume-up"></i></button>' +
         '<span class="t">Chats</span>' +
-        '<button type="button" class="sec64chat-tb-btn" data-act="mute" title="Mute notification sound"><i class="fa fa-volume-up"></i></button>' +
         '<button type="button" class="sec64chat-tb-btn" data-act="min"  title="Minimize"><i class="fa fa-window-minimize"></i></button>' +
         '<button type="button" class="sec64chat-tb-btn" data-act="close" title="Close">&times;</button>' +
       '</div>' +
@@ -591,6 +658,10 @@
     S.overlay.classList.add('open');
     S.overlay.classList.remove('minimized');
     startTimeTicker();
+    // If a room was already selected (e.g. from a row click that beat the open()
+    // race, or from a previous session before close), make sure it's fully loaded —
+    // not just visually highlighted in the inbox.
+    if(S.roomId && !S.built) openRoom(S.roomId);
   }
   function close(){
     if(!S.overlay) return;
@@ -598,7 +669,8 @@
     stopTimeTicker();
     detachRoom();
     if(S.mountThread) S.mountThread.innerHTML = '<div class="sec64chat-empty"><i class="fa fa-comments fa-2x"></i><div>Select a chat to start messaging</div></div>';
-    S.roomId = null;
+    // Keep S.roomId so the next open() auto-restores the last chat.
+    // (Clear only on explicit re-selection via a different room.)
   }
 
   /* update every "X mins ago" / "X hours ago" timestamp every minute while overlay is open */
@@ -700,6 +772,9 @@
     S.roomId = roomId;
     S.lastReadSent = 0;
     S.scopeMode = 'related';                                          // narrow inbox to this lead's rooms
+    // Fresh room = fresh engagement requirement. Until user clicks/types in the input,
+    // new messages will accumulate the unread badge.
+    if(S.engagedRooms) delete S.engagedRooms[roomId];
 
     var ref = S.db.ref('chatRooms/'+roomId);
     var cb = ref.on('value', function(snap){
@@ -719,8 +794,8 @@
     S.channelRefs.push({ref:ref,cb:cb});
     // mark active in inbox
     renderInbox();
-    // clear bell notifs for this room so the top-nav badge stops counting them
-    markNotificationsRead(roomId);
+    // Bell notifs for this room are NOT cleared here — they clear when the user engages
+    // with the input (markRoomEngaged), matching the inbox-unread reset behaviour.
   }
 
   function subscribeChannels(){
@@ -757,6 +832,11 @@
     var wrap = el('div','sec64chat-inputwrap'); S.elInputwrap = wrap;
     var att = el('button','sec64chat-ic'); att.type='button'; att.id='sec64chat-attach'; att.title='Attach files'; att.innerHTML='<i class="fa fa-paperclip"></i>';
     var inp = el('input','sec64chat-input'); inp.type='text'; inp.placeholder='Type a message…'; S.elInput=inp;
+    // Active-engagement reset: clear unread badge only when the user clicks the input or starts typing.
+    // Idempotent per room session — won't keep writing zeros on every keystroke.
+    inp.addEventListener('focus',   markRoomEngaged);
+    inp.addEventListener('keydown', markRoomEngaged);
+    inp.addEventListener('mousedown', markRoomEngaged);                // covers "already focused → click again"
     var voice = el('button','sec64chat-ic'); voice.type='button'; voice.title='Record voice message'; voice.innerHTML='<i class="fa fa-microphone"></i>'; voice.onclick = function(){ startVoiceRec(); };
     wrap.appendChild(att); wrap.appendChild(inp); wrap.appendChild(voice);
     var send = el('button','sec64chat-send'); send.type='button'; send.innerHTML='<i class="fa fa-paper-plane"></i>'; send.onclick = doSend; S.elSendBtn = send;
@@ -872,13 +952,14 @@
       : '<span class="sec64chat-mt">No participants yet</span>';
     var canAddBtn = canManageMembers() ? '<button type="button" class="sec64chat-addmember-btn" title="Add user"><i class="fa fa-user-plus"></i></button>' : '';
     var ctxHtml   = buildContextStrip();
-    // For INTERNAL threads (task / bid_internal), surface the lead's customer in the title row
-    // so the team can see whose lead this is at a glance. NOT a chat participant.
     var custTitle = '';
     var ibx = findInboxRow();
     if(ibx && (ibx.threadType === 'task' || ibx.threadType === 'bid_internal') && ibx.customerName){
       custTitle = '<span class="sec64chat-title-cust" title="Customer"><i class="fa fa-user"></i>'+esc(ibx.customerName)+'</span>';
     }
+    // "Open Lead / Open Task / Open Bid / Open Job" deep-links — derived from threadType + ids,
+    // open in a new tab via target="_blank". Templates configurable via opts.openUrls.
+    var openLinks = buildOpenLinks(ibx);
     S.elHd.innerHTML =
       '<div class="sec64chat-title-row">' +
         '<div class="sec64chat-title">' +
@@ -886,6 +967,7 @@
           custTitle +
           '<span class="cnt">'+ms.length+' participant'+(ms.length===1?'':'s')+'</span>' +
         '</div>' +
+        openLinks +
         canAddBtn +
       '</div>' +
       '<div class="sec64chat-members">'+chips+'</div>' +
@@ -899,6 +981,28 @@
     if(!S.roomId || !S.inboxRows) return null;
     for(var i=0; i<S.inboxRows.length; i++){ if(S.inboxRows[i].roomId === S.roomId) return S.inboxRows[i]; }
     return null;
+  }
+
+  function fillUrl(tpl, p){
+    return tpl.replace(/\{(\w+)\}/g, function(_, k){ return (p[k] == null ? '' : encodeURIComponent(p[k])); });
+  }
+  // Build the small "Open Lead / Open Task / Open Bid / Open Job" link cluster shown in the title row.
+  // Driven by the open room's threadType + the ids surfaced via the inbox row.
+  function buildOpenLinks(r){
+    if(!r) return '';
+    var t  = r.threadType || '';
+    var p  = { leadId:r.leadId, taskId:r.taskId, bidItemId:r.bidItemId, vendorId:r.vendorId, itemId:r.itemId||0, customerId:r.customerId||0 };
+    var ou = S.openUrls || {};
+    var items = [];
+    function link(label, icon, url){
+      if(!url) return;
+      items.push('<a class="sec64chat-open-link" href="'+esc(url)+'" target="_blank" rel="noopener" title="'+esc(label)+'"><i class="fa '+icon+'"></i><span>'+esc(label)+'</span></a>');
+    }
+    if(p.leadId) link('Lead', 'fa-tag', ou.lead ? fillUrl(ou.lead, p) : '');
+    if(t === 'task' && p.taskId)                                    link('Task', 'fa-tasks',   ou.task ? fillUrl(ou.task, p) : '');
+    if((t === 'bid_internal' || t === 'bid_vendor') && p.bidItemId) link('Bid',  'fa-gavel',   ou.bid  ? fillUrl(ou.bid,  p) : '');
+    if(t === 'job_vendor' && p.taskId)                              link('Job',  'fa-truck',   ou.job  ? fillUrl(ou.job,  p) : '');
+    return items.length ? '<div class="sec64chat-open-links">' + items.join('') + '</div>' : '';
   }
 
   // Build a "who/what/when" context strip from the inbox row for the current room.
@@ -1206,42 +1310,59 @@
   }
   function renderTicks(){
     if(!S.elList) return;
+    // Use unicode check marks instead of FontAwesome icons — render guaranteed in any host
+    // page's font stack (some pages don't fully load FA, which made tick boxes show as empty squares).
+    var TICK_SENT  = '✓';        // ✓
+    var TICK_DOUBLE= '✓✓';  // ✓✓
     Array.prototype.forEach.call(S.elList.querySelectorAll('.tick'), function(t){
       var ts = +t.getAttribute('data-ts'), aud = t.getAttribute('data-aud');
       var elig = eligibleFor(aud);
-      if(!elig.length) { t.innerHTML='<i class="fa fa-check" title="Sent"></i>'; return; }
+      if(!elig.length){
+        t.innerHTML = '<span class="tk tk-sent" title="Sent">'+TICK_SENT+'</span>';
+        return;
+      }
       var readBy  = elig.filter(function(u){ return rcpt(u,'lastRead')      >= ts; });
       var delivBy = elig.filter(function(u){ return rcpt(u,'deliveredUpTo') >= ts; });
       var nElig = elig.length, nR = readBy.length, nD = delivBy.length;
-      // 3-state ladder:
-      //  ✓ sent       — nobody delivered yet
-      //  ✓✓ grey      — at least 1 delivered (or all delivered) but not all read
-      //  ✓✓ blue      — all eligible recipients have read it
       var tip;
       if(nR === nElig){
         tip = 'Read by all ('+nR+'/'+nElig+')';
-        t.innerHTML = '<i class="fa fa-check-double" style="color:#3b82f6" title="'+tip+'"></i>';
+        t.innerHTML = '<span class="tk tk-read" title="'+tip+'">'+TICK_DOUBLE+'</span>';
       } else if(nD > 0){
         tip = 'Delivered to '+nD+'/'+nElig + (nR>0 ? ' · Read by '+nR : '');
-        t.innerHTML = '<i class="fa fa-check-double" style="color:#94a3b8" title="'+tip+'"></i>';
+        t.innerHTML = '<span class="tk tk-deliv" title="'+tip+'">'+TICK_DOUBLE+'</span>';
       } else {
         tip = 'Sent';
-        t.innerHTML = '<i class="fa fa-check" title="'+tip+'"></i>';
+        t.innerHTML = '<span class="tk tk-sent" title="'+tip+'">'+TICK_SENT+'</span>';
       }
     });
   }
   function rcpt(u,f){ var r=S.receipts[u]; return (r&&r[f])?r[f]:0; }
   function eligibleFor(aud){ var o=[]; for(var k in S.members){ if(k===S.uid)continue; var m=S.members[k]; if(canSee(m.side, m.vendorId||'', aud)) o.push(k); } return o; }
   // Called when messages render — the user is actively viewing the chat.
-  // Sets BOTH receipts (delivered + read) for this user at the max ts they've seen.
+  // Writes receipts (delivered + read) for tick-state, but does NOT clear unread.
+  // Unread is now cleared ONLY when the user actively engages with the input (clickInput / type).
   function markRead(msgs){
     if(!msgs||!msgs.length||!S.roomId) return;
     var mx=0; msgs.forEach(function(m){ if((m.ts||0)>mx)mx=m.ts; });
     if(!mx || mx<=S.lastReadSent) return;
     S.lastReadSent = mx;
     S.db.ref('receipts/'+S.roomId+'/'+S.uid).update({lastRead:mx, deliveredUpTo:mx}).catch(function(){});
-    S.db.ref('userRooms/'+S.uid+'/'+S.roomId+'/unread').set(0).catch(function(){});
     if((S.deliveredCache[S.roomId]||0) < mx) S.deliveredCache[S.roomId] = mx;
+  }
+
+  // Active reset — call when the user actually engages with the chat (focuses input or starts typing).
+  // Clears the unread badge in the inbox + clears bell notifs for the open room.
+  function markRoomEngaged(){
+    if(!S.roomId || !S.db || !S.uid) return;
+    if(S.engagedRooms && S.engagedRooms[S.roomId]) return;           // already cleared this session
+    S.engagedRooms = S.engagedRooms || {};
+    S.engagedRooms[S.roomId] = true;
+    if(S.inboxLive[S.roomId]) S.inboxLive[S.roomId].unread = 0;
+    S.inboxRows.forEach(function(rr){ if(rr.roomId === S.roomId) rr.unread = 0; });
+    S.db.ref('userRooms/'+S.uid+'/'+S.roomId+'/unread').set(0).catch(function(){});
+    markNotificationsRead(S.roomId);
+    renderInbox();
   }
   function renderChips(){
     if(!S.elChips) return;
@@ -1658,6 +1779,20 @@
   // Room membership IS the visibility filter (vendors/customers are isolated by being in their OWN room,
   // not by audience-channel filtering inside a shared room).
   function fanOut(preview, aud){
+    // 1) Sender's OWN inbox row — update lastMessage + lastTs so the chat list shows the latest
+    //    text and bubbles to the top. NO unread bump (sender already saw the message).
+    if(S.db && S.uid && S.roomId){
+      var selfRef = S.db.ref('userRooms/'+S.uid+'/'+S.roomId);
+      selfRef.transaction(function(cur){
+        cur = cur || { entityType:'', entityId:0, title:S.meta.title||S.roomId, side:S.side, unread:0 };
+        cur.lastMessage = preview;
+        cur.lastTs      = Date.now();
+        cur.title       = cur.title || S.meta.title || S.roomId;
+        // explicitly do NOT touch cur.unread for the sender
+        return cur;
+      }).catch(function(){});
+    }
+    // 2) Every OTHER member — same row update + unread bump + bell notification
     for(var uid in S.members){
       if(uid === S.uid) continue;                                            // skip sender
       (function(targetUid, m){
@@ -1752,8 +1887,7 @@
     S.inboxRef.on('value', function(snap){
       S.inboxLive = snap.val() || {};
       // Mark messages as "delivered" — the inbox subscription receives lastTs as soon as
-      // the sender pushes, even when the recipient's chat is closed. This is the proper
-      // signal for "✓✓ delivered" (vs "✓✓ blue read" which still needs the chat to be opened).
+      // the sender pushes, even when the recipient's chat is closed.
       for(var roomId in S.inboxLive){
         var live = S.inboxLive[roomId];
         if(!live || !live.lastTs) continue;
@@ -1763,12 +1897,29 @@
           S.db.ref('receipts/'+roomId+'/'+S.uid+'/deliveredUpTo').set(live.lastTs).catch(function(){});
         }
       }
-      renderInbox();
+      // Detect NEW rooms (added by someone else while we're already in the inbox).
+      // If any roomId in live isn't in S.inboxRows, re-fetch inbox so the row appears
+      // with full enriched metadata (title, customer name, agent name, etc.).
+      var existing = {};
+      S.inboxRows.forEach(function(r){ existing[r.roomId] = true; });
+      var hasNew = false;
+      for(var rid in S.inboxLive){ if(!existing[rid]){ hasNew = true; break; } }
+      if(hasNew && !S.inboxRefetching){
+        S.inboxRefetching = true;
+        fetchInbox();
+        setTimeout(function(){ S.inboxRefetching = false; }, 1500);  // debounce against rapid bursts
+      } else {
+        renderInbox();
+      }
     });
   }
-  function fetchInbox(){
-    S.inboxLoading = true;
-    renderInbox();                                          // immediately reflect loading state (or refresh badge if rows already exist)
+  // silent=true → no "Refreshing…" banner, no flicker. The new data lands silently once the
+  // network call resolves. Use when the user triggers a refresh in the background (e.g. Show all).
+  function fetchInbox(silent){
+    if(!silent){
+      S.inboxLoading = true;
+      renderInbox();                                        // surface the loading banner immediately
+    }
     fetch(S.inboxUrl, {credentials:'same-origin'})
       .then(function(r){ return r.json(); })
       .then(function(res){
@@ -1888,8 +2039,15 @@
       return '';
     }
 
-    // sort rows by lastTs desc
-    rows.sort(function(a,b){ return (b.lastTs||0) - (a.lastTs||0); });
+    // Sort rows so the inbox is ordered by actual CHAT activity (not just membership timestamp).
+    // Rooms with a real lastMessage win first; "Begin chat" rooms drop to the bottom but stay
+    // ordered amongst themselves by lastTs desc (= when the user was added).
+    rows.sort(function(a,b){
+      var aHas = a.lastMessage ? 1 : 0;
+      var bHas = b.lastMessage ? 1 : 0;
+      if (aHas !== bHas) return bHas - aHas;                  // chatted rooms first
+      return (b.lastTs||0) - (a.lastTs||0);                   // then most-recent first
+    });
 
     // group preserving sort order (group order = first appearance of group, which = latest activity)
     var groups = {};
@@ -1900,10 +2058,16 @@
       groups[k].push(r);
     });
 
-    // scope banner — shows when inbox is narrowed to a specific lead, with "Show all" escape
+    // Count unread for OTHER leads (those filtered out by the scope) so we can tell the user
+    // "you have N new messages in other chats — click to expand the view".
+    var otherUnread = 0;
+    if(scopeLeadId){
+      merged.forEach(function(r){ if(+r.leadId !== scopeLeadId) otherUnread += (r.unread||0); });
+    }
     var scopeBanner = scopeLeadId
       ? '<div class="sec64chat-scopebar">' +
           '<i class="fa fa-filter"></i> <span class="sb-t">Related to <b>Lead #'+scopeLeadId+'</b></span>' +
+          (otherUnread ? '<span class="sb-other" title="Unread messages in other chats">'+otherUnread+' new elsewhere</span>' : '') +
           '<button type="button" class="sb-clear">Show all <i class="fa fa-times"></i></button>' +
         '</div>'
       : '';
@@ -1916,7 +2080,7 @@
         : '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>'+(q?'No matches':'No chats in this tab')+'</div></div>';
       S.elInboxList.innerHTML = scopeBanner + emptyHtml;
       var clearBtn0 = S.elInboxList.querySelector('.sb-clear');
-      if(clearBtn0) clearBtn0.onclick = function(){ S.scopeMode = 'all'; renderInbox(); };
+      if(clearBtn0) clearBtn0.onclick = function(){ S.scopeMode = 'all'; fetchInbox(true); renderInbox(); };
       return;
     }
 
@@ -1946,18 +2110,14 @@
 
     // wire "Show all" — clears the lead-scope filter
     var clearBtn = S.elInboxList.querySelector('.sb-clear');
-    if(clearBtn) clearBtn.onclick = function(){ S.scopeMode = 'all'; renderInbox(); };
+    if(clearBtn) clearBtn.onclick = function(){ S.scopeMode = 'all'; fetchInbox(true); renderInbox(); };
 
     Array.prototype.forEach.call(S.elInboxList.querySelectorAll('.sec64chat-row-card'), function(el){
       el.onclick = function(e){
         e.stopPropagation();
-        var rid = el.getAttribute('data-room');
-        // optimistic: clear unread badge immediately so user gets instant feedback
-        if(S.inboxLive[rid]) S.inboxLive[rid].unread = 0;
-        S.inboxRows.forEach(function(rr){ if(rr.roomId === rid) rr.unread = 0; });
-        S.db.ref('userRooms/'+S.uid+'/'+rid+'/unread').set(0).catch(function(){});
-        openRoom(rid);
-        renderInbox();
+        // Unread is now cleared by user engagement (focus/type in input), NOT by row click.
+        // The count keeps accumulating until the user actively engages.
+        openRoom(el.getAttribute('data-room'));
       };
     });
     Array.prototype.forEach.call(S.elInboxList.querySelectorAll('.grp > .grp-h'), function(el){
