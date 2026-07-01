@@ -775,6 +775,8 @@
     // Fresh room = fresh engagement requirement. Until user clicks/types in the input,
     // new messages will accumulate the unread badge.
     if(S.engagedRooms) delete S.engagedRooms[roomId];
+    // Mobile: swap from inbox pane → thread pane. Desktop ignores this class (both stay visible).
+    if(S.overlay) S.overlay.classList.add('showing-thread');
 
     var ref = S.db.ref('chatRooms/'+roomId);
     var cb = ref.on('value', function(snap){
@@ -962,6 +964,7 @@
     var openLinks = buildOpenLinks(ibx);
     S.elHd.innerHTML =
       '<div class="sec64chat-title-row">' +
+        '<button type="button" class="sec64chat-back-btn" title="Back to chats"><i class="fa fa-arrow-left"></i></button>' +
         '<div class="sec64chat-title">' +
           esc(S.meta.title||S.roomId) +
           custTitle +
@@ -969,9 +972,20 @@
         '</div>' +
         openLinks +
         canAddBtn +
+        '<button type="button" class="sec64chat-info-btn" title="Details"><i class="fa fa-info-circle"></i></button>' +
       '</div>' +
       '<div class="sec64chat-members">'+chips+'</div>' +
       (ctxHtml ? '<div class="sec64chat-ctx">'+ctxHtml+'</div>' : '');
+    var backBtn = S.elHd.querySelector('.sec64chat-back-btn');
+    if(backBtn) backBtn.onclick = function(e){
+      e.stopPropagation();
+      if(S.overlay) S.overlay.classList.remove('showing-thread');
+    };
+    var infoBtn = S.elHd.querySelector('.sec64chat-info-btn');
+    if(infoBtn) infoBtn.onclick = function(e){
+      e.stopPropagation();
+      S.elHd.classList.toggle('expanded');
+    };
     if(S.elTitle) S.elTitle.textContent = S.meta.title || S.roomId;
     var addBtn = S.elHd.querySelector('.sec64chat-addmember-btn');
     if(addBtn) addBtn.onclick = function(e){ e.stopPropagation(); openAddMemberPopover(addBtn); };
