@@ -2077,7 +2077,7 @@
         ? (S.inboxLoading
             ? '<div class="sec64chat-emptyinbox"><i class="fa fa-spinner fa-spin"></i><div>Loading related chats…</div></div>'
             : '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>No related chats for <b>Lead #'+scopeLeadId+'</b> in this tab</div></div>')
-        : '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>'+(q?'No matches':'No chats in this tab')+'</div></div>';
+        : '<div class="sec64chat-emptyinbox"><i class="fa fa-inbox"></i><div>No chats in this tab</div></div>';
       S.elInboxList.innerHTML = scopeBanner + emptyHtml;
       var clearBtn0 = S.elInboxList.querySelector('.sb-clear');
       if(clearBtn0) clearBtn0.onclick = function(){ S.scopeMode = 'all'; fetchInbox(true); renderInbox(); };
